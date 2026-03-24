@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import os
+import time
 from flask import Flask, jsonify
 from admin_bot import create_admin_app
 from friend_bot import create_friend_app
@@ -8,127 +9,69 @@ from config import check_config, TEST_VIDEO_URL
 from sheets import log_action
 from video_handler import process_test_video
 
-# ─────────────────────────────────────────
-# GLOBAL BOT REFERENCES
-# ─────────────────────────────────────────
-
-_admin_app = None
-_friend_app = None
-_bot_loop = None  # Bots wala asyncio loop
-
-
-# ─────────────────────────────────────────
-# FLASK SERVER
-# ─────────────────────────────────────────
-
+# Flask App setup
 flask_app = Flask(__name__)
+
+# Global state
+class BotState:
+    admin_app = None
+    friend_app = None
+    loop = None
+
+state = BotState()
 
 @flask_app.route("/")
 def health():
-    return "🚀 LAMAZAT CANVAS — Running!"
-
-@flask_app.route("/health")
-def health_check():
-    # Check if bots are initialized
-    status = "running" if (_admin_app and _friend_app) else "initializing"
-    return {"status": "ok", "bots": status}
-
-
-# ─────────────────────────────────────────
-# /test — Manual Trigger Logic
-# ─────────────────────────────────────────
+    return "🚀 SERVER IS LIVE!"
 
 @flask_app.route("/test")
 def trigger_test():
-    global _admin_app, _friend_app, _bot_loop
+    # Agar bot abhi tak start nahi hua, toh hum thoda wait karenge
+    for _ in range(5): 
+        if state.admin_app and state.loop:
+            break
+        time.sleep(2)
 
-    # 1. Check if bots are ready
-    if not _admin_app or not _friend_app or not _bot_loop:
-        return jsonify({
-            "status": "error",
-            "message": "Bots abhi start nahi hue — thoda wait karo aur dobara try karo"
-        })
+    if not state.admin_app:
+        return jsonify({"status": "error", "message": "Bot initialization failure. Check Render Logs."})
 
-    # 2. Async function ko existing loop mein run karo
     try:
-        asyncio.run_coroutine_threadsafe(
-            process_test_video(_admin_app.bot, _friend_app.bot, TEST_VIDEO_URL),
-            _bot_loop
+        # Loop mein task daal do
+        state.loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                process_test_video(state.admin_app.bot, state.friend_app.bot, TEST_VIDEO_URL)
+            )
         )
-        
-        return jsonify({
-            "status": "success",
-            "message": "Test process shuru ho gaya hai! Telegram check karo."
-        })
+        return jsonify({"status": "success", "message": "Test process started! Check Telegram."})
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": f"Test trigger fail: {str(e)}"
-        })
+        return jsonify({"status": "error", "message": str(e)})
 
+async def start_async_bots():
+    state.admin_app = create_admin_app()
+    state.friend_app = create_friend_app()
+    state.loop = asyncio.get_running_loop()
 
-# ─────────────────────────────────────────
-# BOT STARTUP LOGIC (Async)
-# ─────────────────────────────────────────
-
-async def run_bots():
-    global _admin_app, _friend_app, _bot_loop
-
-    _admin_app = create_admin_app()
-    _friend_app = create_friend_app()
-
-    # Loop save karo taaki Flask isse use kar sake
-    _bot_loop = asyncio.get_running_loop()
-
-    # Apps initialize aur start karo
-    await _admin_app.initialize()
-    await _friend_app.initialize()
-    await _admin_app.start()
-    await _friend_app.start()
-
-    # Polling start karo
-    await _admin_app.updater.start_polling()
-    await _friend_app.updater.start_polling()
-
-    print("✅ Bots start ho gaye hain!")
-    log_action("Main", "Both bots started successfully", "Success")
+    await state.admin_app.initialize()
+    await state.friend_app.initialize()
+    await state.admin_app.start()
+    await state.friend_app.start()
     
-    # Infinite loop taaki thread chalta rahe
-    stop_event = asyncio.Event()
-    await stop_event.wait()
+    await state.admin_app.updater.start_polling()
+    await state.friend_app.updater.start_polling()
+    
+    print("✅ BOTS ARE NOW ONLINE")
+    # Keep alive
+    while True:
+        await asyncio.sleep(3600)
 
+def run_bots_forever():
+    asyncio.run(start_async_bots())
 
-def start_bots_thread():
-    """Naya asyncio loop create karke bots chalao"""
-    try:
-        asyncio.run(run_bots())
-    except Exception as e:
-        print(f"❌ Bots Error: {e}")
-        log_action("Main", f"Bots crashed: {str(e)}", "Error")
-
-
-# ─────────────────────────────────────────
-# AUTO-START (Render/Gunicorn compatibility)
-# ─────────────────────────────────────────
-
-print("🚀 LAMAZAT CANVAS — Initializing...")
-
-# Environment variables check karo
-errors = check_config()
-if errors:
-    print("❌ Configuration Error!")
-else:
-    # GLOBAL START: Ye block Render pe file load hote hi chal jayega
-    print("✅ Starting background bot thread...")
-    bot_thread = threading.Thread(target=start_bots_thread, daemon=True)
-    bot_thread.start()
-
-
-# ─────────────────────────────────────────
-# LOCAL RUN (Sirf PC pe chalate waqt)
-# ─────────────────────────────────────────
+# Render startup ke liye direct call (Bahut Important)
+print("🚀 Starting background threads...")
+t = threading.Thread(target=run_bots_forever, daemon=True)
+t.start()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 Flask server running on port {port}...")
     flask_app.run(host="0.0.0.0", port=port)
