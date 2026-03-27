@@ -6,59 +6,31 @@ on:
     - cron: "30 6 * * *"
     - cron: "30 12 * * *"
     - cron: "30 18 * * *"
-
   workflow_dispatch:
-    inputs:
-      keyword_override:
-        description: "Test ke liye specific keyword (optional)"
-        required: false
-        default: ""
 
 jobs:
   scrape-social-signals:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
-
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: |
           pip install --upgrade pip
           pip install playwright gspread oauth2client requests
-
-      - name: Install Playwright Browsers
+      - name: Install Playwright
         run: |
           playwright install chromium
           playwright install-deps chromium
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libglib2.0-0 libnss3 libatk1.0-0 \
-            libatk-bridge2.0-0 libcups2 libdrm2 \
-            libxkbcommon0 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 libgbm1 libasound2
-
-      - name: Run Social Signals Scraper
+      - name: Run Scraper
         env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
           python social_scraper.py
-
-      - name: Upload Logs on Failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scraper-logs
-          path: "*.log"
-          retention-days: 3
