@@ -1,0 +1,55 @@
+name: Eprolo Scraper
+
+on:
+  schedule:
+    # Har 6 ghante — IST 6am, 12pm, 6pm, 12am
+    # UTC: 0:30, 6:30, 12:30, 18:30
+    - cron: "30 0 * * *"
+    - cron: "30 6 * * *"
+    - cron: "30 12 * * *"
+    - cron: "30 18 * * *"
+
+  workflow_dispatch:
+
+jobs:
+  scrape-eprolo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install playwright gspread oauth2client requests
+
+      - name: Install Playwright + System Dependencies
+        run: |
+          playwright install chromium --with-deps
+
+      - name: Run Eprolo Scraper
+        env:
+          EPROLO_EMAIL:       ${{ secrets.EPROLO_EMAIL }}
+          EPROLO_PASSWORD:    ${{ secrets.EPROLO_PASSWORD }}
+          GOOGLE_SHEET_ID:    ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: |
+          echo "🛍️ Eprolo Scraper Starting..."
+          python eprolo_scraper.py
+          echo "✅ Done!"
+
+      - name: Upload Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eprolo-logs
+          path: "*.log"
+          retention-days: 3
