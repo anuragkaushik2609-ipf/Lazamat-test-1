@@ -218,20 +218,35 @@ async def login_eprolo(page):
             except PlaywrightTimeout:
                 continue
 
-        await asyncio.sleep(random.uniform(3, 5))
+        # Login ke baad URL change hone ka wait karo (max 15 sec)
+        try:
+            await page.wait_for_function(
+                "() => !window.location.hash.includes('/login')",
+                timeout=15000
+            )
+            print("[Login] URL changed away from login page ✅")
+        except Exception:
+            pass
 
-        # Login success check
+        await asyncio.sleep(random.uniform(2, 3))
+
+        # Login success check — hash mein #/login nahi hona chahiye
         current_url = page.url
-        if "login" not in current_url.lower() or "dashboard" in current_url.lower() or "app" in current_url.lower():
-            print(f"[Login] Success! URL: {current_url[:60]}")
+        print(f"[Login] Current URL: {current_url[:80]}")
+
+        if "#/login" not in current_url.lower():
+            print(f"[Login] Success! Logged in ✅")
             return True
         else:
-            print(f"[Login] May have failed. URL: {current_url[:60]}")
-            # Page content check
+            # Page content check as fallback
             content = await page.content()
-            if "logout" in content.lower() or "dashboard" in content.lower():
-                print("[Login] Actually logged in (found logout/dashboard in content)")
+            if "logout" in content.lower() or "my account" in content.lower():
+                print("[Login] Actually logged in (found logout in content)")
                 return True
+            print(f"[Login] Failed — still on login page ❌")
+            # Screenshot debug info
+            title = await page.title()
+            print(f"[Login] Page title: {title}")
             return False
 
     except Exception as e:
@@ -246,14 +261,25 @@ async def extract_products_from_page(page):
     """Current page se product cards extract karo"""
     products = []
 
-    await asyncio.sleep(random.uniform(2, 4))
+    await asyncio.sleep(random.uniform(3, 5))
 
-    # Scroll karke products load karo
-    for _ in range(4):
+    # Scroll karke lazy-load products trigger karo
+    for _ in range(5):
         await page.evaluate("window.scrollBy(0, window.innerHeight * 0.8)")
-        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.sleep(random.uniform(1.5, 2.5))
 
-    # Product card selectors — Eprolo ke liye
+    # Pehle debug — kya kya classes hain page par
+    all_classes = await page.evaluate("""
+        () => {
+            const els = document.querySelectorAll('[class]');
+            const classes = new Set();
+            els.forEach(el => el.className.toString().split(' ').forEach(c => { if(c) classes.add(c); }));
+            return [...classes].slice(0, 80).join(', ');
+        }
+    """)
+    print(f"[Debug] Page classes: {all_classes[:300]}")
+
+    # Product card selectors — broad se narrow
     card_selectors = [
         ".product-item",
         ".goods-item",
@@ -261,118 +287,193 @@ async def extract_products_from_page(page):
         "[class*='goods-card']",
         "[class*='item-card']",
         ".catalog-item",
-        "[class*='catalog']  .item",
+        "[class*='catalog'] .item",
         "li[class*='product']",
         "div[class*='product'][class*='list'] > div",
+        "[class*='product-list'] > div",
+        "[class*='goodsItem']",
+        "[class*='productItem']",
+        ".el-col",  # Element UI grid
+        "[class*='goods-list'] > div",
     ]
 
     cards = []
+    used_sel = ""
     for sel in card_selectors:
         cards = await page.query_selector_all(sel)
         if len(cards) >= 3:
             print(f"[Scraper] Found {len(cards)} cards — selector: {sel}")
+            used_sel = sel
             break
 
     if not cards:
-        print("[Scraper] No product cards found — trying JSON from page source")
-        # Page source se JSON data try karo
-        content = await page.content()
-        json_products = extract_from_json(content)
-        return json_products
+        print("[Scraper] No product cards found — trying JS extraction")
+        # JavaScript se directly data nikaalo
+        js_products = await page.evaluate("""
+            () => {
+                const results = [];
+                // Sab links dhundo jo product URL jaisi lagein
+                const links = document.querySelectorAll('a[href*="product"], a[href*="goods"], a[href*="item"]');
+                links.forEach((link, i) => {
+                    if (i >= 20) return;
+                    const card = link.closest('li, div.item, div[class*="card"], div[class*="product"]') || link.parentElement;
+                    if (!card) return;
+                    const text = card.innerText || '';
+                    const img = card.querySelector('img');
+                    const priceMatch = text.match(/\\$?([\\d.]+)/);
+                    const nameEl = card.querySelector('h1,h2,h3,h4,p,span[class*="name"],span[class*="title"],.name,.title');
+                    results.push({
+                        name: nameEl ? nameEl.innerText.trim() : text.split('\\n')[0].trim(),
+                        href: link.href,
+                        price_text: priceMatch ? priceMatch[1] : '',
+                        img_src: img ? (img.src || img.dataset.src || '') : '',
+                        card_text: text.slice(0, 200)
+                    });
+                });
+                return results;
+            }
+        """)
+        print(f"[Scraper] JS found {len(js_products)} potential products")
+        for i, item in enumerate(js_products[:5]):
+            print(f"  [{i+1}] name={item.get('name','')[:50]} | price={item.get('price_text')} | href={item.get('href','')[:60]}")
 
-    for card in cards[:20]:
+        # JS results se product banao
+        for item in js_products[:20]:
+            try:
+                name = item.get("name", "").strip()
+                if not name or len(name) < 4:
+                    name = item.get("card_text", "").split("\n")[0].strip()
+                if not name or len(name) < 4:
+                    continue
+                price_str = item.get("price_text", "")
+                price = float(price_str) if price_str else 0.0
+                if price < MIN_PRICE or price > MAX_PRICE:
+                    continue
+                href = item.get("href", "")
+                id_match = re.search(r'[?&]id=(\d+)|/(\d{6,})', href)
+                pid = (id_match.group(1) or id_match.group(2)) if id_match else f"EP{abs(hash(name))%100000:05d}"
+                products.append({
+                    "name": name[:150],
+                    "product_id": pid,
+                    "product_url": href,
+                    "price_usd": price,
+                    "price_eur": usd_to_eur(price),
+                    "image_url": item.get("img_src", ""),
+                    "orders": 0, "reviews": 0, "rating": 0,
+                    "category": "", "video_url": "",
+                    "signal_strength": signal_strength(0, 0, 0)
+                })
+            except Exception:
+                continue
+
+        # Agar JS bhi fail toh page source se JSON try karo
+        if not products:
+            print("[Scraper] Trying JSON from page source...")
+            content = await page.content()
+            print(f"[Debug] Page content length: {len(content)} chars")
+            # First 500 chars of body text
+            body_text = await page.evaluate("() => document.body ? document.body.innerText.slice(0, 500) : 'NO BODY'")
+            print(f"[Debug] Body text preview: {body_text[:300]}")
+            json_products = extract_from_json(content)
+            products.extend(json_products)
+
+        print(f"[Scraper] Extracted {len(products)} products (JS mode)")
+        return products
+
+    # Card-based extraction — JS evaluate for speed + accuracy
+    js_data = await page.evaluate(f"""
+        () => {{
+            const results = [];
+            const cards = document.querySelectorAll('{used_sel}');
+            cards.forEach((card, i) => {{
+                if (i >= 20) return;
+                const data = {{}};
+
+                // Name — sab text elements try karo
+                const nameEl = card.querySelector('h1,h2,h3,h4,[class*="title"],[class*="name"],[class*="Title"],[class*="Name"],p.name,span.name');
+                data.name = nameEl ? nameEl.innerText.trim() : '';
+                if (!data.name) {{
+                    // First meaningful text node
+                    const allText = card.querySelectorAll('p,span,div');
+                    for (let el of allText) {{
+                        const t = el.innerText.trim();
+                        if (t.length > 8 && t.length < 200 && !t.match(/^\\$|^\\d/)) {{
+                            data.name = t;
+                            break;
+                        }}
+                    }}
+                }}
+
+                // Price
+                const priceEl = card.querySelector('[class*="price"],[class*="Price"],[class*="cost"],span.amount,.amount');
+                const priceText = priceEl ? priceEl.innerText : card.innerText;
+                const priceMatch = priceText.match(/\\$?([\\d]+\\.?[\\d]{{0,2}})/);
+                data.price_text = priceMatch ? priceMatch[1] : '';
+
+                // Link
+                const link = card.querySelector('a[href]');
+                data.href = link ? link.href : '';
+
+                // Image
+                const img = card.querySelector('img');
+                data.img = img ? (img.src || img.getAttribute('data-src') || img.getAttribute('data-lazy') || '') : '';
+
+                // Sold/Orders
+                const soldEl = card.querySelector('[class*="sold"],[class*="order"],[class*="sale"],[class*="Sold"]');
+                data.sold_text = soldEl ? soldEl.innerText : '';
+
+                // Full card text for debug
+                data.card_text = card.innerText.slice(0, 150);
+
+                results.push(data);
+            }});
+            return results;
+        }}
+    """)
+
+    print(f"[Scraper] JS extracted raw data for {len(js_data)} cards")
+    # Debug first 3 cards
+    for i, item in enumerate(js_data[:3]):
+        print(f"  Card[{i+1}]: name='{item.get('name','')[:40]}' price='{item.get('price_text')}' text='{item.get('card_text','')[:80]}'")
+
+    for item in js_data:
         try:
-            product = {}
-
-            # Name
-            name_sels = ["h3", "h4", ".title", ".name", "[class*='title']", "[class*='name']", "a"]
-            for s in name_sels:
-                el = await card.query_selector(s)
-                if el:
-                    text = await el.inner_text()
-                    if text and len(text) > 5:
-                        product["name"] = text.strip()[:150]
-                        break
-
-            if not product.get("name"):
+            name = item.get("name", "").strip()
+            if not name or len(name) < 4:
                 continue
 
-            # Product URL + ID
-            link = await card.query_selector("a[href]")
-            if link:
-                href = await link.get_attribute("href")
-                if href:
-                    product["product_url"] = href if href.startswith("http") else f"https://eprolo.com{href}"
-                    id_match = re.search(r'[?&]id=(\d+)|/(\d{6,})', href)
-                    if id_match:
-                        product["product_id"] = id_match.group(1) or id_match.group(2)
+            price_str = item.get("price_text", "")
+            price = float(price_str) if price_str else 0.0
+            if price == 0:
+                # card_text se price try karo
+                m = re.search(r'\$?([\d]+\.?[\d]{0,2})', item.get("card_text", ""))
+                if m:
+                    price = float(m.group(1))
 
-            if not product.get("product_id"):
-                product["product_id"] = f"EP{hash(product.get('name',''))%100000:05d}"
-
-            # Price
-            price_sels = [".price", "[class*='price']", "span[class*='cost']", ".amount"]
-            for s in price_sels:
-                el = await card.query_selector(s)
-                if el:
-                    text = await el.inner_text()
-                    num = re.sub(r"[^\d.]", "", text.replace(",", "."))
-                    if num:
-                        product["price_usd"] = float(num)
-                        product["price_eur"] = usd_to_eur(float(num))
-                        break
-
-            if not product.get("price_usd"):
-                continue
-
-            price = product["price_usd"]
             if price < MIN_PRICE or price > MAX_PRICE:
                 continue
 
-            # Image
-            img = await card.query_selector("img")
-            if img:
-                src = await img.get_attribute("src") or await img.get_attribute("data-src") or ""
-                if src:
-                    product["image_url"] = src if src.startswith("http") else f"https:{src}"
+            href = item.get("href", "")
+            id_match = re.search(r'[?&]id=(\d+)|/(\d{6,})', href)
+            pid = (id_match.group(1) or id_match.group(2)) if id_match else f"EP{abs(hash(name))%100000:05d}"
 
-            # Orders / Sold count
-            sold_sels = ["[class*='sold']", "[class*='order']", "[class*='sale']"]
-            for s in sold_sels:
-                el = await card.query_selector(s)
-                if el:
-                    text = await el.inner_text()
-                    count = parse_number(text)
-                    if count > 0:
-                        product["orders"] = count
-                        break
-            if "orders" not in product:
-                product["orders"] = 0
+            sold_text = item.get("sold_text", "")
+            orders = parse_number(sold_text) if sold_text else 0
 
-            # Rating
-            rating_sels = ["[class*='rating']", "[class*='star']", ".score"]
-            for s in rating_sels:
-                el = await card.query_selector(s)
-                if el:
-                    text = await el.inner_text()
-                    num = re.sub(r"[^\d.]", "", text)
-                    if num:
-                        val = float(num)
-                        if 1 <= val <= 5:
-                            product["rating"] = val
-                            break
-            if "rating" not in product:
-                product["rating"] = 0
-
-            product["reviews"]  = 0
-            product["category"] = ""
-            product["video_url"] = ""
-            product["signal_strength"] = signal_strength(
-                product.get("orders", 0), product.get("reviews", 0), product.get("rating", 0)
-            )
-
-            products.append(product)
-
+            products.append({
+                "name": name[:150],
+                "product_id": pid,
+                "product_url": href if href.startswith("http") else f"https://eprolo.com{href}",
+                "price_usd": price,
+                "price_eur": usd_to_eur(price),
+                "image_url": item.get("img", ""),
+                "orders": orders,
+                "reviews": 0,
+                "rating": 0,
+                "category": "",
+                "video_url": "",
+                "signal_strength": signal_strength(orders, 0, 0)
+            })
         except Exception:
             continue
 
