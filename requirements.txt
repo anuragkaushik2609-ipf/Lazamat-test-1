@@ -6,3 +6,4 @@ requests==2.31.0
 flask==3.0.0
 yt-dlp==2024.3.10
 pytrends==4.9.2
+playwright==1.42.0

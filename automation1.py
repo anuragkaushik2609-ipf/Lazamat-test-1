@@ -4,10 +4,10 @@ automation1.py — LAMAZAT CANVAS
 Automation 1 — Trending Product Detection
 Signals:
   1. Pytrends — Google Trends (5+ European countries)
-  2. CJ API   — Order growth (buying proof)
+  2. Eprolo   — Order growth (buying proof)
   3. Facebook Ads Library — New ads last 7 days
   4. TikTok/Instagram — GitHub Actions se data aayega (Sheet mein save)
-  5. Reviews Growth — CJ se review count
+  5. Reviews Growth — Eprolo se review count
 
 Flow:
   - Subah 6, Dopahar 12, Sham 6, Raat 12 — 4 sessions/day
@@ -40,9 +40,6 @@ from config import ADMIN_CHAT_ID
 # CONFIG
 # ─────────────────────────────────────────
 
-CJ_API_KEY       = os.getenv("CJ_API_KEY")
-CJ_API_BASE      = "https://developers.cjdropshipping.com/api2.0/v1"
-
 EUROPEAN_COUNTRIES = ["DE", "FR", "NL", "IT", "ES", "PL", "BE", "SE", "AT", "PT"]
 GEO_CODES          = {
     "DE": "DE", "FR": "FR", "NL": "NL", "IT": "IT",
@@ -71,110 +68,31 @@ MAX_DAYS_IN_POOL = 21
 SIGNALS_REQUIRED = 4
 
 # ─────────────────────────────────────────
-# CJ API — TOKEN
+# EPROLO — PRODUCTS SHEET SE LO
 # ─────────────────────────────────────────
 
-_cj_token = None
-_cj_token_expiry = None
-
-def get_cj_token():
-    global _cj_token, _cj_token_expiry
-    if _cj_token and _cj_token_expiry and datetime.now() < _cj_token_expiry:
-        return _cj_token
-
+def fetch_eprolo_products(min_signal="Medium"):
+    """Eprolo Products tab se Strong/Medium products lo"""
     try:
-        url = f"{CJ_API_BASE}/authentication/getAccessToken"
-        resp = requests.post(url, json={"email": os.getenv("CJ_EMAIL"), "password": os.getenv("CJ_PASSWORD")}, timeout=15)
-        data = resp.json()
-        if data.get("result"):
-            _cj_token = data["data"]["accessToken"]
-            _cj_token_expiry = datetime.now() + timedelta(hours=23)
-            log_action("CJ Auth", "Token refreshed", "Success")
-            return _cj_token
-    except Exception as e:
-        log_action("CJ Auth", f"Token error: {e}", "Error")
-    return None
-
-def cj_headers():
-    token = get_cj_token()
-    return {"CJ-Access-Token": token} if token else {}
-
-# ─────────────────────────────────────────
-# CJ API — PRODUCT FETCH
-# ─────────────────────────────────────────
-
-def fetch_cj_trending_products(page=1, page_size=20):
-    """CJ se trending/new arrival products fetch karo"""
-    try:
-        url = f"{CJ_API_BASE}/product/list"
-        params = {
-            "pageNum": page,
-            "pageSize": page_size,
-            "countryCode": "DE",       # Europe shipping check
-            "categoryLevel1": "",
-            "sortField": "totalOrders", # Order count se sort
-            "sortType": "DESC"
-        }
-        resp = requests.get(url, headers=cj_headers(), params=params, timeout=20)
-        data = resp.json()
-
-        if data.get("result") and data.get("data"):
-            products = data["data"].get("list", [])
-            log_action("CJ Fetch", f"{len(products)} products fetched", "Success")
-            return products
-        else:
-            log_action("CJ Fetch", f"No data: {data.get('message')}", "Warning")
+        sheet = get_sheet()
+        if not sheet:
             return []
+        try:
+            tab = sheet.worksheet("Eprolo Products")
+        except Exception:
+            log_action("Eprolo Fetch", "Eprolo Products tab nahi mili", "Warning")
+            return []
+
+        records = tab.get_all_records()
+        strong_levels = ["Strong"] if min_signal == "Strong" else ["Strong", "Medium"]
+        result = [r for r in records if r.get("signal_strength") in strong_levels
+                  and r.get("status") == "Active"]
+
+        log_action("Eprolo Fetch", f"{len(result)} products found", "Success")
+        return result
     except Exception as e:
-        log_action("CJ Fetch", f"Error: {e}", "Error")
+        log_action("Eprolo Fetch", f"Error: {e}", "Error")
         return []
-
-def check_cj_europe_shipping(product_id):
-    """Product Europe mein ship hota hai?"""
-    try:
-        url = f"{CJ_API_BASE}/logistic/freightCalculate"
-        body = {
-            "productId": product_id,
-            "quantity": 1,
-            "countryCode": "DE"
-        }
-        resp = requests.post(url, headers=cj_headers(), json=body, timeout=15)
-        data = resp.json()
-        if data.get("result") and data.get("data"):
-            return True
-        return False
-    except Exception as e:
-        log_action("CJ Shipping", f"Error: {e}", "Error")
-        return False
-
-def get_cj_product_detail(product_id):
-    """Product ki detail + reviews + video"""
-    try:
-        url = f"{CJ_API_BASE}/product/query"
-        params = {"pid": product_id}
-        resp = requests.get(url, headers=cj_headers(), params=params, timeout=15)
-        data = resp.json()
-        if data.get("result"):
-            return data.get("data", {})
-        return {}
-    except Exception as e:
-        log_action("CJ Detail", f"Error: {e}", "Error")
-        return {}
-
-def get_cj_order_growth(product_id):
-    """Product ke orders ka growth check — buying proof"""
-    try:
-        url = f"{CJ_API_BASE}/product/query"
-        params = {"pid": product_id}
-        resp = requests.get(url, headers=cj_headers(), params=params, timeout=15)
-        data = resp.json()
-        if data.get("result"):
-            orders = data["data"].get("productSellCount", 0)
-            return int(orders) if orders else 0
-        return 0
-    except Exception as e:
-        log_action("CJ Orders", f"Error: {e}", "Error")
-        return 0
 
 # ─────────────────────────────────────────
 # SIGNAL 1 — PYTRENDS (Google Trends)
@@ -220,7 +138,7 @@ def check_pytrends_signal(keyword):
         return False, 0
 
 # ─────────────────────────────────────────
-# SIGNAL 2 — CJ ORDER GROWTH
+# SIGNAL 2 — ORDER GROWTH
 # ─────────────────────────────────────────
 
 def check_order_growth_signal(product_id, current_orders):
@@ -247,29 +165,18 @@ def check_facebook_ads_signal(keyword):
     Returns: (signal: bool, ad_count: int)
     """
     try:
-        url = "https://www.facebook.com/ads/library/async/search_typeahead/"
-        params = {
-            "q": keyword,
-            "session_id": hashlib.md5(keyword.encode()).hexdigest()[:16],
-            "country": "DE",
-            "ad_type": "all",
-        }
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json",
             "Referer": "https://www.facebook.com/ads/library/"
         }
 
-        # Public search endpoint
         search_url = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=DE&q={keyword}&search_type=keyword_unordered"
 
         resp = requests.get(search_url, headers=headers, timeout=20)
 
-        # Response mein ad count extract karo
-        # Facebook public page se count estimate
         if resp.status_code == 200:
             content = resp.text
-            # "results" ya ad count dhundho
             import re
             count_match = re.findall(r'"count":(\d+)', content)
             if count_match:
@@ -278,10 +185,9 @@ def check_facebook_ads_signal(keyword):
                 log_action("FB Ads", f"{keyword}: ~{ad_count} ads", "Success" if signal else "Info")
                 return signal, ad_count
 
-        # Fallback — agar page load hua toh ads exist karte hain
         signal = resp.status_code == 200
         log_action("FB Ads", f"{keyword}: Page loaded={signal}", "Info")
-        return signal, 0 if not signal else 25  # Conservative estimate
+        return signal, 0 if not signal else 25
 
     except Exception as e:
         log_action("FB Ads", f"Error for {keyword}: {e}", "Error")
@@ -306,7 +212,6 @@ def check_social_signal_from_sheet(product_keyword):
             tab = sheet.worksheet("Social Signals")
             records = tab.get_all_records()
         except Exception:
-            # Tab nahi hai abhi — GitHub Actions abhi setup nahi
             log_action("Social Signal", f"{product_keyword}: Tab not found", "Warning")
             return False, 0
 
@@ -331,16 +236,12 @@ def check_social_signal_from_sheet(product_keyword):
 def check_reviews_signal(product_id, review_count):
     """
     Review count check.
-    1000+ reviews organic rate pe = real product.
-    1000 reviews 3 din mein = fake flag.
+    50+ reviews = real product signal.
+    5000+ thodi der mein = suspicious flag.
     """
     try:
-        # CJ se review data
-        detail = get_cj_product_detail(product_id)
-        current_reviews = int(detail.get("productReviewCount", review_count) or 0)
+        current_reviews = int(review_count or 0)
 
-        # 50-999 reviews = real organic growth zone
-        # 1000+ thodi der mein = suspicious
         if current_reviews > 5000:
             log_action("Reviews", f"ID:{product_id} Suspicious: {current_reviews}", "Warning")
             return False
@@ -402,13 +303,13 @@ def calculate_score(signals_data, product_data):
     # 4. Competition Level (20%) — FB ads count
     ad_count = signals_data.get("ad_count", 0)
     if ad_count <= 30:
-        comp_score = 20    # Low competition = good
+        comp_score = 20
     elif ad_count <= 60:
         comp_score = 14
     elif ad_count <= 100:
         comp_score = 8
     else:
-        comp_score = 3    # Too saturated
+        comp_score = 3
     score += comp_score
 
     # 5. Price (10%)
@@ -476,9 +377,9 @@ def is_duplicate(new_product, existing_products):
 # CATEGORY & TYPE HELPERS
 # ─────────────────────────────────────────
 
-def detect_category(product_name, category_name_cj):
-    """CJ category se map karo"""
-    name_lower = (product_name + " " + category_name_cj).lower()
+def detect_category(product_name, category_hint=""):
+    """Category detect karo product name se"""
+    name_lower = (product_name + " " + category_hint).lower()
     if any(k in name_lower for k in ["phone", "laptop", "earphone", "speaker", "gadget", "electronic", "led", "camera", "watch"]):
         return "Electronics"
     if any(k in name_lower for k in ["shirt", "dress", "jacket", "pants", "hoodie", "tshirt", "clothing", "fashion", "apparel"]):
@@ -579,7 +480,7 @@ async def alert_top4(admin_bot_token, top_products):
             f"   Price: EUR {p.get('price_eur', 'N/A')}\n"
             f"   Type: {p.get('type', 'N/A')}\n"
             f"   Category: {p.get('category', 'N/A')}\n"
-            f"   CJ Video: {p.get('cj_video_url', 'N/A')}\n\n"
+            f"   Video: {p.get('video_url', 'N/A')}\n\n"
         )
     await send_telegram_alert(admin_bot_token, ADMIN_CHAT_ID, text)
 
@@ -610,7 +511,7 @@ async def run_session(admin_bot_token, products_to_check=None):
         return
 
     # 1. Expired products clean karo
-    removed = remove_expired_products()
+    remove_expired_products()
 
     # 2. Current pool status
     existing_products = get_all_products()
@@ -627,52 +528,47 @@ async def run_session(admin_bot_token, products_to_check=None):
 
     category_counts = get_category_counts(existing_products)
 
-    # 3. CJ se products fetch
+    # 3. Eprolo se products fetch
     if not products_to_check:
-        products_to_check = fetch_cj_trending_products(page_size=20)
+        products_to_check = fetch_eprolo_products()
 
     if not products_to_check:
-        log_action("Automation1", "No products from CJ", "Warning")
+        log_action("Automation1", "No products from Eprolo", "Warning")
         return
 
     session_added = []
     checked = 0
 
-    for cj_product in products_to_check:
+    for ep in products_to_check:
         if checked >= 10:  # Har session mein max 10
             break
 
         try:
-            product_id   = str(cj_product.get("pid", cj_product.get("productId", "")))
-            product_name = cj_product.get("productName", cj_product.get("productNameEn", "Unknown"))
-            cj_category  = cj_product.get("categoryName", "")
-            sell_price   = float(cj_product.get("sellPrice", cj_product.get("productPrice", 0)) or 0)
-            supplier_price = float(cj_product.get("costPrice", sell_price * 0.5) or sell_price * 0.5)
-            order_count  = int(cj_product.get("productSellCount", 0) or 0)
-            image_url    = cj_product.get("productImage", "")
-            video_url    = cj_product.get("productVideo", "")
+            product_id   = str(ep.get("product_id", ""))
+            product_name = str(ep.get("name", "Unknown"))
+            sell_price   = float(ep.get("price_eur", ep.get("price_usd", 0)) or 0)
+            order_count  = int(ep.get("orders", 0) or 0)
+            image_url    = str(ep.get("image_url", ""))
+            video_url    = str(ep.get("video_url", ""))
+            review_count = int(ep.get("reviews", 0) or 0)
 
             # ── Price filter ──
             if sell_price < MIN_PRICE_EUR:
                 log_action("Filter", f"{product_name}: Price too low EUR {sell_price}", "Skip")
                 continue
 
-            # ── Margin check ──
-            shipping_est = 3.5  # Average Europe shipping estimate
-            gross_profit = sell_price - supplier_price - shipping_est
-            margin_pct = (gross_profit / sell_price * 100) if sell_price > 0 else 0
+            # ── Margin estimate (Eprolo cost ~50%) ──
+            supplier_price = sell_price * 0.50
+            shipping_est   = 3.5
+            gross_profit   = sell_price - supplier_price - shipping_est
+            margin_pct     = (gross_profit / sell_price * 100) if sell_price > 0 else 0
 
             if margin_pct < MIN_MARGIN_PCT:
                 log_action("Filter", f"{product_name}: Margin low {margin_pct:.1f}%", "Skip")
                 continue
 
-            # ── Europe shipping check ──
-            if not check_cj_europe_shipping(product_id):
-                log_action("Filter", f"{product_name}: No Europe shipping", "Skip")
-                continue
-
             # ── Category detect ──
-            category = detect_category(product_name, cj_category)
+            category = detect_category(product_name)
 
             # ── Category space check ──
             if not category_has_space(category, category_counts):
@@ -698,14 +594,14 @@ async def run_session(admin_bot_token, products_to_check=None):
             signals_data = {}
 
             # Signal 1 — Pytrends
-            keyword = " ".join(product_name.split()[:3])  # First 3 words
+            keyword = " ".join(product_name.split()[:3])
             trend_signal, countries_count = check_pytrends_signal(keyword)
             signals_data["countries_trending"] = countries_count
             if trend_signal:
                 signals_passed += 1
             time.sleep(random.uniform(2, 4))
 
-            # Signal 2 — CJ Order Growth
+            # Signal 2 — Order Growth
             order_signal = check_order_growth_signal(product_id, order_count)
             signals_data["orders"] = order_count
             if order_signal:
@@ -725,8 +621,6 @@ async def run_session(admin_bot_token, products_to_check=None):
                 signals_passed += 1
 
             # Signal 5 — Reviews
-            review_detail = get_cj_product_detail(product_id)
-            review_count  = int(review_detail.get("productReviewCount", 0) or 0)
             review_signal = check_reviews_signal(product_id, review_count)
             if review_signal:
                 signals_passed += 1
@@ -759,9 +653,9 @@ async def run_session(admin_bot_token, products_to_check=None):
                 "category":     category,
                 "type":         product_type,
                 "score":        score,
-                "cj_video_url": video_url,
+                "video_url":    video_url,
                 "price_eur":    round(sell_price, 2),
-                "supplier":     "CJ Dropshipping",
+                "supplier":     "Eprolo",
                 "signal_1":     "Yes" if trend_signal else "No",
                 "signal_2":     "Yes" if order_signal else "No",
                 "signal_3":     "Yes" if fb_signal else "No",
@@ -769,7 +663,7 @@ async def run_session(admin_bot_token, products_to_check=None):
                 "signal_5":     "Yes" if review_signal else "No",
                 "days_in_pool": 0,
                 "status":       "Active",
-                "source":       "CJ Trending",
+                "source":       "Eprolo Trending",
                 "image_hash":   img_hash,
             }
 
@@ -823,7 +717,6 @@ def get_next_session_time():
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
 
-    # UTC session times (IST - 5:30)
     sessions_utc = [
         (0, 30),   # IST 06:00
         (6, 30),   # IST 12:00
@@ -843,7 +736,6 @@ def get_next_session_time():
             log_action("Scheduler", f"Next session IST {ist_h:02d}:{ist_m:02d} — wait {round(diff/3600,1)}h", "Info")
             return diff
 
-    # Kal ka pehla session (UTC 00:30)
     next_dt = (now_utc + timedelta(days=1)).replace(hour=0, minute=30, second=0, microsecond=0)
     diff = (next_dt - now_utc).total_seconds()
     log_action("Scheduler", f"Next session tomorrow IST 06:00 — wait {round(diff/3600,1)}h", "Info")
@@ -865,12 +757,10 @@ async def run_scheduler(admin_bot_token):
     )
 
     while True:
-        # Pehle next session tak wait karo
         wait_seconds = get_next_session_time()
         if wait_seconds > 30:
             await asyncio.sleep(wait_seconds)
 
-        # Session chalaao
         ist_now = get_india_time()
         log_action("Scheduler", f"Session starting IST {ist_now.strftime('%H:%M')}", "Info")
         try:
@@ -895,7 +785,7 @@ def start_automation1(admin_bot_token):
 def fetch_aliexpress_suppliers(keyword, max_results=1):
     """
     AliExpress se suppliers fetch karo (no login scrape).
-    Fallback: agar block ho toh CJ Verified return karo.
+    Fallback: agar block ho toh Eprolo Verified return karo.
     """
     try:
         import re
@@ -914,7 +804,7 @@ def fetch_aliexpress_suppliers(keyword, max_results=1):
         }
         resp = requests.get(search_url, headers=headers, timeout=20)
         if resp.status_code != 200:
-            return [{"name": "CJ Verified ✅", "price": "N/A", "rating": "N/A", "url": ""}]
+            return [{"name": "Eprolo Verified ✅", "price": "N/A", "rating": "N/A", "url": ""}]
 
         content = resp.text
         prices  = re.findall(r'"salePrice"[^}]*?"minAmount"[^}]*?"value":"([\d.]+)"', content)
@@ -933,15 +823,14 @@ def fetch_aliexpress_suppliers(keyword, max_results=1):
             })
 
         if not suppliers:
-            return [{"name": "CJ Verified ✅", "price": "N/A", "rating": "N/A", "url": search_url}]
+            return [{"name": "Eprolo Verified ✅", "price": "N/A", "rating": "N/A", "url": search_url}]
 
         log_action("AliExpress", f"{keyword}: {len(suppliers)} suppliers found", "Success")
         return suppliers
 
     except Exception as e:
         log_action("AliExpress", f"Error: {e}", "Error")
-        return [{"name": "CJ Verified ✅", "price": "N/A", "rating": "N/A", "url": ""}]
-
+        return [{"name": "Eprolo Verified ✅", "price": "N/A", "rating": "N/A", "url": ""}]
 
 # ─────────────────────────────────────────
 # GROQ AI ANALYSIS
@@ -957,7 +846,7 @@ def get_groq_analysis(product_name, price_eur, margin_pct, countries_trending, o
         prompt = (
             f"Tu ek expert dropshipping analyst hai. Hinglish mein 3-4 lines mein bata "
             f"ki ye product trend kar raha hai kyunki:\n\n"
-            f"Product: {product_name}\nCJ Price: €{price_eur:.2f}\n"
+            f"Product: {product_name}\nEprolo Price: €{price_eur:.2f}\n"
             f"Margin: {margin_pct:.1f}%\nGoogle Trends: {countries_trending}/2 countries\n"
             f"Total Orders: {orders}\nFacebook Ads: ~{ad_count} ads\n\n"
             f"'Ye product trend kar raha hai kyunki...' se shuru karo. Max 4 lines."
@@ -978,7 +867,6 @@ def get_groq_analysis(product_name, price_eur, margin_pct, countries_trending, o
         log_action("Groq", f"Exception: {e}", "Error")
         return "⚠️ Groq analysis temporarily unavailable."
 
-
 # ─────────────────────────────────────────
 # TEST PIPELINE — /test endpoint se call
 # ─────────────────────────────────────────
@@ -986,35 +874,38 @@ def get_groq_analysis(product_name, price_eur, margin_pct, countries_trending, o
 async def run_product_test(admin_bot_token):
     """
     /test URL se trigger hoga.
-    CJ fetch → AliExpress → Trends → FB Ads → Groq → Telegram (image + report) → Friend Bot → Sheet save
+    Eprolo Sheet → AliExpress → Trends → FB Ads → Groq → Telegram (image + report) → Friend Bot → Sheet save
     """
     log_action("TestPipeline", "Starting test run", "Info")
 
-    # ── Step 1: CJ se product ──
-    products = fetch_cj_trending_products(page_size=5)
-    cj_product = None
-    for p in products:
-        if float(p.get("sellPrice", p.get("productPrice", 0)) or 0) >= MIN_PRICE_EUR:
-            cj_product = p
+    # ── Step 1: Eprolo se product lo ──
+    eprolo_products = fetch_eprolo_products()
+    ep = None
+    for p in eprolo_products:
+        price = float(p.get("price_eur", p.get("price_usd", 0)) or 0)
+        if price >= MIN_PRICE_EUR:
+            ep = p
             break
 
-    if not cj_product:
+    if not ep:
         await send_telegram_alert(admin_bot_token, ADMIN_CHAT_ID,
-            "⚠️ *Test Failed*\n\nCJ se koi valid product nahi mila. CJ credentials check karo.")
+            "⚠️ *Test Failed*\n\nEprolo Products sheet mein koi valid product nahi mila.\n"
+            "Pehle eprolo_scraper.py chalao (GitHub Actions → Run workflow).")
         return
 
-    product_id   = str(cj_product.get("pid", cj_product.get("productId", "")))
-    product_name = cj_product.get("productNameEn", cj_product.get("productName", "Unknown"))
-    sell_price   = float(cj_product.get("sellPrice", cj_product.get("productPrice", 0)) or 0)
-    cost_price   = float(cj_product.get("costPrice", sell_price * 0.5) or sell_price * 0.5)
-    order_count  = int(cj_product.get("productSellCount", 0) or 0)
-    image_url    = cj_product.get("productImage", "") or ""
-    video_url    = cj_product.get("productVideo", "") or ""
-    cj_link      = f"https://cjdropshipping.com/product/-p-{product_id}.html"
+    product_id   = str(ep.get("product_id", ""))
+    product_name = str(ep.get("name", "Unknown"))
+    sell_price   = float(ep.get("price_eur", ep.get("price_usd", 0)) or 0)
+    order_count  = int(ep.get("orders", 0) or 0)
+    review_count = int(ep.get("reviews", 0) or 0)
+    image_url    = str(ep.get("image_url", ""))
+    video_url    = str(ep.get("video_url", ""))
+    ep_link      = str(ep.get("product_url", "https://eprolo.com"))
 
+    cost_est        = sell_price * 0.50
     shipping_est    = 3.5
     suggested_price = round(sell_price * 2.2, 2)
-    gross_profit    = suggested_price - cost_price - shipping_est
+    gross_profit    = suggested_price - cost_est - shipping_est
     margin_pct      = (gross_profit / suggested_price * 100) if suggested_price > 0 else 0
 
     log_action("TestPipeline", f"Product: {product_name} | €{sell_price}", "Info")
@@ -1051,12 +942,8 @@ async def run_product_test(admin_bot_token):
     # ── Step 5: Groq Analysis ──
     groq_analysis = get_groq_analysis(product_name, sell_price, margin_pct, trend_countries, order_count, ad_count)
 
-    # ── Step 6: Reviews ──
-    detail = get_cj_product_detail(product_id)
-    review_count = int(detail.get("productReviewCount", 0) or 0)
-
     # ── Telegram message ──
-    suppliers_text = f"1. CJ Dropshipping — €{cost_price:.2f}\n"
+    suppliers_text = f"1. Eprolo — €{cost_est:.2f}\n"
     for i, sup in enumerate(ali_suppliers, 2):
         suppliers_text += f"{i}. {sup['name']} — {sup['price']}\n"
 
@@ -1064,7 +951,7 @@ async def run_product_test(admin_bot_token):
         f"🧪 *TEST RESULT — 1 Trending Product*\n\n"
         f"🛍️ *Product:* {product_name}\n"
         f"🎬 *Video:* {video_url if video_url else '❌ Available nahi'}\n\n"
-        f"💰 *CJ Price:* €{cost_price:.2f}\n"
+        f"💰 *Eprolo Price:* €{cost_est:.2f}\n"
         f"🚢 *Shipping:* €{shipping_est:.2f}\n"
         f"💸 *Suggested Price:* €{suggested_price:.2f}\n"
         f"📊 *Margin:* {margin_pct:.1f}%\n\n"
@@ -1075,7 +962,7 @@ async def run_product_test(admin_bot_token):
         f"{'✅' if fb_signal else '❌'} FB Ads: ~{ad_count} ads\n"
         f"{'✅' if review_count >= 50 else '❌'} Reviews: {review_count:,}\n\n"
         f"🤖 *Groq Analysis:*\n_{groq_analysis}_\n\n"
-        f"🔗 *CJ Link:* {cj_link}\n"
+        f"🔗 *Eprolo Link:* {ep_link}\n"
         f"🔗 *AliExpress:* {ali_link if ali_link else '❌ Available nahi'}"
     )
 
@@ -1087,7 +974,7 @@ async def run_product_test(admin_bot_token):
                 json={
                     "chat_id": ADMIN_CHAT_ID,
                     "photo": image_url,
-                    "caption": f"📸 *{product_name}*\n€{cost_price:.2f} → €{suggested_price:.2f} | Margin: {margin_pct:.1f}%",
+                    "caption": f"📸 *{product_name}*\n€{cost_est:.2f} → €{suggested_price:.2f} | Margin: {margin_pct:.1f}%",
                     "parse_mode": "Markdown"
                 },
                 timeout=10
@@ -1110,7 +997,7 @@ async def run_product_test(admin_bot_token):
                         "text": (
                             f"🎬 *Naya Product — Video Edit Karo!*\n\n"
                             f"*{product_name}*\n\n"
-                            f"*CJ Video URL:*\n`{video_url}`\n\n"
+                            f"*Eprolo Video URL:*\n`{video_url}`\n\n"
                             f"1️⃣ URL se video download karo\n"
                             f"2️⃣ CapCut mein edit karo (15-30 sec)\n"
                             f"3️⃣ Edited MP4 is bot par bhejo\n"
@@ -1121,7 +1008,6 @@ async def run_product_test(admin_bot_token):
                     },
                     timeout=10
                 )
-                # Friend ko image bhi bhejo reference ke liye
                 if image_url:
                     requests.post(
                         f"https://api.telegram.org/bot{friend_token}/sendPhoto",
@@ -1146,12 +1032,12 @@ async def run_product_test(admin_bot_token):
         saved = add_product({
             "product_id":   product_id,
             "name":         product_name,
-            "category":     detect_category(product_name, ""),
+            "category":     detect_category(product_name),
             "type":         product_type,
             "score":        score,
-            "cj_video_url": video_url,
+            "video_url":    video_url,
             "price_eur":    round(sell_price, 2),
-            "supplier":     "CJ Dropshipping",
+            "supplier":     "Eprolo",
             "signal_1":     "Yes" if trend_signal else "No",
             "signal_2":     "Yes" if order_count >= 500 else "No",
             "signal_3":     "Yes" if fb_signal else "No",

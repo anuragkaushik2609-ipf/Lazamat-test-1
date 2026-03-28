@@ -48,34 +48,6 @@ def trigger_test():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
-
-@flask_app.route("/debug/cj")
-def debug_cj():
-    """CJ API credentials + token test"""
-    import requests as req, os
-    email    = os.getenv("CJ_EMAIL", "")
-    password = os.getenv("CJ_PASSWORD", "")
-    result = {
-        "CJ_EMAIL":    email[:4] + "***" if email else "MISSING",
-        "CJ_PASSWORD": "SET" if password else "MISSING",
-    }
-    try:
-        resp = req.post(
-            "https://developers.cjdropshipping.com/api2.0/v1/authentication/getAccessToken",
-            json={"email": email, "password": password},
-            timeout=15
-        )
-        data = resp.json()
-        result["http_status"] = resp.status_code
-        result["cj_result"]   = data.get("result")
-        result["cj_message"]  = data.get("message", "")
-        result["token_ok"]    = "YES" if data.get("result") else "NO"
-        if data.get("result") and data.get("data"):
-            result["token_preview"] = str(data["data"].get("accessToken",""))[:20] + "..."
-    except Exception as e:
-        result["error"] = str(e)
-    return jsonify(result)
-
 @flask_app.route("/automation1/status")
 def auto1_status():
     try:
@@ -113,7 +85,6 @@ async def start_bots_async():
         await state.friend_app.start()
 
         print("🤖 [Bots] Starting polling...")
-        # run_polling ke bajaye manually start karo — zyada control milta hai
         await state.admin_app.updater.start_polling(drop_pending_updates=True)
         await state.friend_app.updater.start_polling(drop_pending_updates=True)
 
@@ -121,7 +92,6 @@ async def start_bots_async():
         print("✅ [Bots] BOTS ONLINE! Polling started.")
         log_action("Main", "Both bots online and polling", "Success")
 
-        # Forever alive rakho
         while True:
             await asyncio.sleep(60)
 
@@ -156,7 +126,6 @@ def automation1_worker():
 def delayed_auto1():
     print("⏳ [Auto1] Waiting 20s for bots to start...")
     time.sleep(20)
-    # Bots ready hone tak wait karo
     for i in range(30):  # Max 5 min wait
         if state.bots_ready:
             print("✅ [Auto1] Bots ready — starting Automation 1")
@@ -172,15 +141,13 @@ def delayed_auto1():
 print("🚀 [Main] Server starting...")
 print(f"🔑 [Main] ADMIN_BOT_TOKEN: {'SET ✅' if ADMIN_BOT_TOKEN else 'MISSING ❌'}")
 
-# Config check
 errors = check_config()
 if errors:
     print(f"⚠️ [Main] Config warnings: {errors}")
 else:
     print("✅ [Main] All config variables present")
 
-# Threads start karo
-bot_thread = threading.Thread(target=bot_worker, daemon=False)  # daemon=False — crash pe log dikhega
+bot_thread = threading.Thread(target=bot_worker, daemon=False)
 bot_thread.start()
 print("🔧 [Main] Bot thread started")
 
